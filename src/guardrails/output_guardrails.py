@@ -39,14 +39,35 @@ def content_filter(response: str) -> dict:
     issues = []
     redacted = response
 
-    # PII patterns to check
+    # PII patterns to check.  Notes on false positives / performance:
+    # - (?<!\d) ... (?!\d) instead of \b so numbers glued to text still match,
+    #   but digits inside a longer number never do.
+    # - Lookbehinds like (?<![\w.+-]) make email/host matches start only at
+    #   the beginning of a token -> linear time even on "a" * 5000.
     PII_PATTERNS = {
-        # TODO: Add regex patterns for:
-        # - VN phone number: r"0\d{9,10}"
-        # - Email: r"[\w.-]+@[\w.-]+\.[a-zA-Z]{2,}"
-        # - National ID (CMND/CCCD): r"\b\d{9}\b|\b\d{12}\b"
-        # - API key pattern: r"sk-[a-zA-Z0-9-]+"
-        # - Password pattern: r"password\s*[:=]\s*\S+"
+        # VN mobile (03/05/07/08/09) or landline (02x), optional +84 and
+        # space/dot/dash separators ("090 123 4567"). Hotline 1900... starts
+        # with 1, so it is never touched.
+        "vn_phone": r"(?<!\d)(?:\+84|0)[\s.-]?[235789](?:[\s.-]?\d){8,9}(?!\d)",
+        # Official support address is allowed (but not look-alikes such as
+        # support@vinbank.example.evil.com); any other email is PII.
+        "email": r"(?<![\w.+-])(?!support@vinbank\.example(?!\.?[\w-]))[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-zA-Z]{2,}",
+        # CMND (9 digits) / CCCD (12 digits). Real IDs start with a 0 province
+        # code; amounts never do, so "360000000 VND" stays visible. A 9-12
+        # digit number right after a "CMND"/"CCCD" label is also caught
+        # (lookbehind -> only the number is replaced, the label stays).
+        "national_id": r"(?<!\d)0(?:\d{8}|\d{11})(?!\d)"
+                       r"|(?:(?<=CMND )|(?<=CCCD )|(?<=CMND: )|(?<=CCCD: ))\d{9,12}(?!\d)",
+        # \b so "risk-free" / "low-risk-adjusted" are not treated as keys.
+        "api_key": r"\bsk-[A-Za-z0-9_-]{4,}",
+        # "password=<anything>", or "password is/:/là <value with a digit or
+        # symbol>". Advice like "Your password must be 8 characters" passes.
+        "password": r"(?:password|mật khẩu|mat khau)\s*=\s*\S+"
+                    r"|(?:password|mật khẩu|mat khau)\s*(?:is|:|là|la)\s*"
+                    r"(?=\S*[\d!@#$%^&*])\S{4,}",
+        # Demo secrets / internal hosts
+        "demo_secret": r"admin123",
+        "internal_host": r"(?<![\w.-])[\w.-]+\.internal(?::\d+)?\b",
     }
 
     for name, pattern in PII_PATTERNS.items():
@@ -153,8 +174,9 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
     def _extract_text(self, llm_response) -> str:
         """Extract text from LLM response."""
         text = ""
-        if hasattr(llm_response, "content") and llm_response.content:
-            for part in llm_response.content.parts:
+        content = getattr(llm_response, "content", None)
+        if content and content.parts:  # parts can be None (empty response)
+            for part in content.parts:
                 if hasattr(part, "text") and part.text:
                     text += part.text
         return text
@@ -172,16 +194,28 @@ class OutputGuardrailPlugin(base_plugin.BasePlugin):
         if not response_text:
             return llm_response
 
-        # TODO: Implement logic:
-        # 1. Call content_filter(response_text)
-        #    - If issues found: replace llm_response.content with redacted version
-        #    - Increment self.redacted_count
-        # 2. If use_llm_judge: call llm_safety_check(response_text)
-        #    - If unsafe: replace llm_response.content with a safe message
-        #    - Increment self.blocked_count
-        # 3. Return llm_response (possibly modified)
+        # 1. Rule-based PII / secret redaction.  Redact each text part in
+        #    place so non-text parts (e.g. function calls) are preserved.
+        result = content_filter(response_text)
+        if not result["safe"]:
+            for part in llm_response.content.parts:
+                if part.text:
+                    part.text = content_filter(part.text)["redacted"]
+            self.redacted_count += 1
+            response_text = result["redacted"]
 
-        return llm_response  # TODO: modify if needed
+        # 2. Optional LLM judge (disabled unless a judge agent exists)
+        if self.use_llm_judge:
+            verdict = await llm_safety_check(response_text)
+            if not verdict["safe"]:
+                llm_response.content = types.Content(
+                    role="model",
+                    parts=[types.Part.from_text(
+                        text="Sorry, I can't share that response.")],
+                )
+                self.blocked_count += 1
+
+        return llm_response
 
 
 # ============================================================

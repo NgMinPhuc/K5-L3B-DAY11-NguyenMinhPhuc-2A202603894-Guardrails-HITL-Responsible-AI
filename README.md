@@ -1,5 +1,31 @@
 # Day 11 — Controlled Agent Security (2026)
 
+## Bài nộp
+
+| | |
+|---|---|
+| **Họ tên** | Nguyễn Minh Phúc |
+| **MSSV** | 2A202603894 |
+| **Lớp** | K5 · L3B |
+| **Red / Red Advance** | `gemini` · `gemini-3.5-flash` |
+| **Blue** | OpenRouter `liquid/lfm-3-1.7b:free` |
+| **Bonus chọn** | **B1** (leak Red) |
+
+**Cách chạy lại** (từ gốc repo, cần `.env` với `OPENROUTER_API_KEY`, `RED_TEAM_PROVIDER=gemini`, `GOOGLE_API_KEY`):
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python src/main.py --part 3   # Blue → outputs/results.json, audit_log.json, metrics.json
+python src/main.py --part 4   # Red + Red Advance → outputs/attack_results.json
+pytest tests -q
+python scripts/grade.py --submission-dir . --out outputs/grade_report.json
+```
+
+**Kết quả:** safe bị chặn 0/6 · attack bị chặn 8/8 · rate limit 15 gửi / 10 qua / 5 chặn · Red leak 3/7 · Red Advance leak 0/7.
+
+---
+
 > 👤 **Hình thức:** bài tập **cá nhân** (1 người / 1 MSSV).  
 > 🎯 **Mục tiêu:** đóng vai **Blue Team** để học cách xây Guardrails phòng thủ, rồi đóng vai **Red Team** để tấn công agent **Red** hoặc **Red Advance**.  
 > ✅ Làm theo **Checkpoint 1 → 5** trong [`CHECKPOINTS.md`](CHECKPOINTS.md) · nộp theo [`SUBMISSION.md`](SUBMISSION.md).
